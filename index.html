@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>PHP Pong Arcade</title>
+    <style>
+        body {
+            background-color: #0b0c10;
+            color: #ffffff;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            user-select: none;
+        }
+        h1 {
+            margin: 0 0 4px 0;
+            letter-spacing: 4px;
+            text-shadow: 0 0 12px #00f3ff;
+        }
+        #status { color: #00ffcc; font-size: 13px; margin-bottom: 8px; }
+        #barra-topo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+        #controles {
+            background: #161822;
+            border: 1px solid #2a2d3d;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #ccc;
+        }
+        #btnPause {
+            background: #1f2335;
+            color: #00f3ff;
+            border: 1px solid #00f3ff;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-family: 'Courier New', Courier, monospace;
+            font-weight: bold;
+            font-size: 12px;
+            cursor: pointer;
+            transition: 0.15s;
+        }
+        #btnPause:hover {
+            background: #00f3ff;
+            color: #0b0c10;
+        }
+        b { color: #ffaa00; }
+        canvas {
+            border: 3px solid #2b2f42;
+            background-color: #11131c;
+            box-shadow: 0 0 35px rgba(0, 243, 255, 0.15);
+            outline: none;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>PHP PONG ARCADE</h1>
+    <div id="status">Conectando ao servidor PHP...</div>
+    <div id="barra-topo">
+        <div id="controles">
+            <b>W / S</b> ou <b>▲ / ▼</b>: Mover e Curva &nbsp;|&nbsp;
+            <b>ESPAÇO</b>: Super Chute &nbsp;|&nbsp;
+            <b>P</b>: Pausar
+        </div>
+        <button id="btnPause">⏸ PAUSAR (P)</button>
+    </div>
+    <canvas id="gameCanvas" width="800" height="450" tabindex="1"></canvas>
+
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+        const statusDiv = document.getElementById("status");
+        const btnPause = document.getElementById("btnPause");
+
+        window.focus();
+        canvas.focus();
+        canvas.addEventListener("click", () => canvas.focus());
+
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function tocarSom(tipo) {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            const agora = audioCtx.currentTime;
+
+            if (tipo === 'raquete') {
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(440, agora);
+                osc.frequency.exponentialRampToValueAtTime(600, agora + 0.08);
+                gain.gain.setValueAtTime(0.08, agora);
+                gain.gain.exponentialRampToValueAtTime(0.001, agora + 0.08);
+                osc.start(agora); osc.stop(agora + 0.08);
+            } else if (tipo === 'power') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(220, agora);
+                osc.frequency.exponentialRampToValueAtTime(880, agora + 0.22);
+                gain.gain.setValueAtTime(0.14, agora);
+                gain.gain.exponentialRampToValueAtTime(0.001, agora + 0.22);
+                osc.start(agora); osc.stop(agora + 0.22);
+            } else if (tipo === 'parede') {
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(240, agora);
+                gain.gain.setValueAtTime(0.07, agora);
+                gain.gain.exponentialRampToValueAtTime(0.001, agora + 0.06);
+                osc.start(agora); osc.stop(agora + 0.06);
+            } else if (tipo === 'powerup') {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(520, agora);
+                osc.frequency.setValueAtTime(780, agora + 0.08);
+                gain.gain.setValueAtTime(0.1, agora);
+                gain.gain.exponentialRampToValueAtTime(0.001, agora + 0.18);
+                osc.start(agora); osc.stop(agora + 0.18);
+            } else if (tipo === 'ponto') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(160, agora);
+                osc.frequency.exponentialRampToValueAtTime(55, agora + 0.35);
+                gain.gain.setValueAtTime(0.15, agora);
+                gain.gain.exponentialRampToValueAtTime(0.001, agora + 0.35);
+                osc.start(agora); osc.stop(agora + 0.35);
+            }
+        }
+
+        let particulas = [];
+        let rastroBola = [];
+
+        function criarExplosao(x, y, cor, qtd = 18) {
+            for (let i = 0; i < qtd; i++) {
+                const ang = Math.random() * Math.PI * 2;
+                const vel = 1 + Math.random() * 5;
+                particulas.push({
+                    x, y,
+                    vx: Math.cos(ang) * vel,
+                    vy: Math.sin(ang) * vel,
+                    vida: 1.0,
+                    cor
+                });
+            }
+        }
+
+        const ws = new WebSocket("ws://localhost:8000");
+        let meuLado = 'espectador';
+        let gameState = null;
+
+        function alternarPause() {
+            if (meuLado === 'espectador' || ws.readyState !== WebSocket.OPEN) return;
+            ws.send(JSON.stringify({ tipo: 'pausar' }));
+            canvas.focus();
+        }
+
+        btnPause.addEventListener("click", alternarPause);
+
+        ws.onopen = () => {
+            statusDiv.innerHTML = "Conectado ao Servidor PHP";
+            statusDiv.style.color = "#00ffcc";
+        };
+
+        ws.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+
+            if (msg.tipo === 'boas-vindas') {
+                meuLado = msg.lado;
+                statusDiv.innerHTML = meuLado === 'espectador'
+                    ? "Modo Espectador"
+                    : `Você controla a raquete da ${meuLado.toUpperCase()} — Primeiro a fazer 7 pontos vence!`;
+            }
+
+            if (msg.tipo === 'atualizacao') {
+                gameState = msg.estado;
+                btnPause.innerText = gameState.pausado ? "▶ CONTINUAR (P)" : "⏸ PAUSAR (P)";
+
+                if (!gameState.pausado) {
+                    if (gameState.eventoSom) {
+                        tocarSom(gameState.eventoSom);
+                        const corExp = gameState.eventoSom === 'power' ? '#ff4500' :
+                                       gameState.eventoSom === 'ponto' ? '#ff0055' : '#00f3ff';
+                        criarExplosao(gameState.bola.x, gameState.bola.y, corExp, 20);
+                    }
+
+                    rastroBola.push({ x: gameState.bola.x, y: gameState.bola.y, power: gameState.bola.power });
+                    if (rastroBola.length > 12) rastroBola.shift();
+                }
+
+                desenharJogo();
+            }
+        };
+
+        ws.onclose = () => {
+            statusDiv.innerHTML = "Desconectado. Inicie o servidor.php no terminal.";
+            statusDiv.style.color = "#ff3333";
+        };
+
+        const teclas = { subir: false, descer: false, espaco: false };
+
+        window.addEventListener("keydown", (e) => {
+            if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') {
+                e.preventDefault();
+                alternarPause();
+                return;
+            }
+            if (e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') { e.preventDefault(); teclas.subir = true; }
+            if (e.key === 's' || e.key === 'S' || e.key === 'ArrowDown') { e.preventDefault(); teclas.descer = true; }
+            if (e.code === 'Space' && !teclas.espaco) {
+                e.preventDefault();
+                teclas.espaco = true;
+                if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ tipo: 'carregar', ativo: true }));
+            }
+            if (e.key === 'Enter' && gameState && gameState.vencedor) {
+                ws.send(JSON.stringify({ tipo: 'reiniciar' }));
+            }
+        });
+
+        window.addEventListener("keyup", (e) => {
+            if (e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') teclas.subir = false;
+            if (e.key === 's' || e.key === 'S' || e.key === 'ArrowDown') teclas.descer = false;
+            if (e.code === 'Space') {
+                teclas.espaco = false;
+                if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ tipo: 'carregar', ativo: false }));
+            }
+        });
+
+        window.addEventListener("blur", () => {
+            teclas.subir = false; teclas.descer = false; teclas.espaco = false;
+        });
+
+        setInterval(() => {
+            if (meuLado === 'espectador' || ws.readyState !== WebSocket.OPEN) return;
+            if (gameState && gameState.pausado) return;
+            if (teclas.subir) ws.send(JSON.stringify({ tipo: 'mover', direcao: 'subir' }));
+            else if (teclas.descer) ws.send(JSON.stringify({ tipo: 'mover', direcao: 'descer' }));
+        }, 20);
+
+        function desenharJogo() {
+            if (!gameState) return;
+
+            ctx.save();
+
+            if (gameState.shake > 0 && !gameState.pausado) {
+                const dx = (Math.random() - 0.5) * gameState.shake * 1.4;
+                const dy = (Math.random() - 0.5) * gameState.shake * 1.4;
+                ctx.translate(dx, dy);
+            }
+
+            ctx.clearRect(-20, -20, canvas.width + 40, canvas.height + 40);
+
+            // Linha central
+            ctx.strokeStyle = "#25293a";
+            ctx.lineWidth = 4;
+            ctx.setLineDash([12, 12]);
+            ctx.beginPath();
+            ctx.moveTo(canvas.width / 2, 0);
+            ctx.lineTo(canvas.width / 2, canvas.height);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Placar
+            ctx.font = "bold 48px 'Courier New'";
+            ctx.fillStyle = "rgba(255,255,255,0.25)";
+            ctx.textAlign = "center";
+            ctx.fillText(gameState.jogadores.esq.pontos, canvas.width / 4, 70);
+            ctx.fillText(gameState.jogadores.dir.pontos, (canvas.width / 4) * 3, 70);
+
+            // Power-up no centro
+            const pu = gameState.powerup;
+            if (pu.ativo) {
+                const coresPU = { crescer: '#39ff14', encolher: '#d500f9', turbo: '#ffea00' };
+                const simbolosPU = { crescer: '+', encolher: '-', turbo: '⚡' };
+                ctx.fillStyle = coresPU[pu.tipo];
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = coresPU[pu.tipo];
+                ctx.beginPath();
+                ctx.arc(pu.x, pu.y, 16, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.shadowBlur = 0;
+                ctx.fillStyle = "#000";
+                ctx.font = "bold 16px 'Courier New'";
+                ctx.fillText(simbolosPU[pu.tipo], pu.x, pu.y + 5);
+            }
+
+            // Raquete Esquerda
+            const pe = gameState.jogadores.esq;
+            ctx.fillStyle = pe.carregando ? "#ffaa00" : "#00f3ff";
+            ctx.shadowBlur = pe.carregando ? 22 : 12;
+            ctx.shadowColor = pe.carregando ? "#ffaa00" : "#00f3ff";
+            ctx.fillRect(15, pe.y, pe.largura, pe.altura);
+
+            // Raquete Direita
+            const pd = gameState.jogadores.dir;
+            ctx.fillStyle = pd.carregando ? "#ffaa00" : "#ff4d6d";
+            ctx.shadowBlur = 12;
+            ctx.shadowColor = "#ff4d6d";
+            ctx.fillRect(canvas.width - 29, pd.y, pd.largura, pd.altura);
+
+            // Rastro da bola
+            rastroBola.forEach((p, idx) => {
+                const alpha = (idx + 1) / rastroBola.length * 0.45;
+                ctx.fillStyle = p.power ? `rgba(255, 80, 0, ${alpha})` : `rgba(57, 255, 20, ${alpha})`;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, gameState.bola.raio * (idx / rastroBola.length), 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // Bola principal
+            ctx.fillStyle = gameState.bola.power ? "#ff4500" : "#39ff14";
+            ctx.shadowBlur = gameState.bola.power ? 24 : 12;
+            ctx.shadowColor = gameState.bola.power ? "#ff2200" : "#39ff14";
+            ctx.beginPath();
+            ctx.arc(gameState.bola.x, gameState.bola.y, gameState.bola.raio, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.shadowBlur = 0;
+
+            // Partículas
+            if (!gameState.pausado) {
+                particulas = particulas.filter(p => p.vida > 0);
+                particulas.forEach(p => {
+                    p.x += p.vx;
+                    p.y += p.vy;
+                    p.vida -= 0.04;
+                    ctx.fillStyle = p.cor;
+                    ctx.globalAlpha = Math.max(0, p.vida);
+                    ctx.fillRect(p.x, p.y, 4, 4);
+                });
+                ctx.globalAlpha = 1.0;
+            }
+
+            // Tela de Pause
+            if (gameState.pausado && !gameState.vencedor) {
+                ctx.fillStyle = "rgba(11, 12, 16, 0.72)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                ctx.fillStyle = "#ffaa00";
+                ctx.font = "bold 42px 'Courier New'";
+                ctx.fillText("JOGO PAUSADO", canvas.width / 2, canvas.height / 2 - 10);
+
+                ctx.fillStyle = "#ffffff";
+                ctx.font = "16px 'Courier New'";
+                ctx.fillText("Pressione P ou clique em Continuar", canvas.width / 2, canvas.height / 2 + 28);
+            }
+
+            // Tela de Fim de Jogo
+            if (gameState.vencedor) {
+                ctx.fillStyle = "rgba(11, 12, 16, 0.82)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                ctx.fillStyle = "#00f3ff";
+                ctx.font = "bold 42px 'Courier New'";
+                ctx.fillText(`${gameState.vencedor} VENCEU!`, canvas.width / 2, canvas.height / 2 - 15);
+
+                ctx.fillStyle = "#ffffff";
+                ctx.font = "18px 'Courier New'";
+                ctx.fillText("Pressione ENTER para jogar novamente", canvas.width / 2, canvas.height / 2 + 30);
+            }
+
+            ctx.restore();
+        }
+    </script>
+</body>
+</html>
